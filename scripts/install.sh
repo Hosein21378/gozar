@@ -4,10 +4,11 @@
 #   ایجنت: bash <(curl -fsSL .../install.sh) --agent <TOKEN> [--panel-url http://IP:8080]
 set -euo pipefail
 
-REPO="Hosein21378/gozar"
+REPO="${GOZAR_REPO:-Hosein21378/gozar}"
 BRANCH="${BRANCH:-main}"
 RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
-GH="https://github.com/${REPO}"
+GH="${GOZAR_GH:-https://github.com/${REPO}}"
+GH_RAW="${GOZAR_RAW:-https://raw.githubusercontent.com/${REPO}}"
 INSTALL_DIR="/opt/gozar"
 DATA_DIR="/etc/gozar"
 SERVICE_PANEL="gozar"
@@ -61,29 +62,59 @@ need() {
 }
 
 # ---------- گرفتن باینری ----------
+# ترتیب تلاش:
+#   ۱) باینری آماده در خود مخزن  (سریع، بدون نیاز به کامپایل)
+#   ۲) باینری پیوست‌شده به Release
+#   ۳) ساخت از سورس             (آخرین چاره — به اینترنت آزاد نیاز دارد)
 fetch_binary() {
-  # اول تلاش: دانلود از releases؛ اگر نبود، از سورس بساز
-  local out="$1" ver
-  ver="$(curl -fsSL "${RAW}/version.json" 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
-  [ -n "$ver" ] || ver="1.0.0"
-  local url="${GH}/releases/download/v${ver}/gozar-linux-${BIN_ARCH}"
-  if curl -fsSL --max-time 180 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
-    say "باینری v${ver} دانلود شد"
-  else
-    warn "باینری آماده پیدا نشد — از سورس می‌سازم (کمی طول می‌کشد)"
-    build_from_source "$out" || die "ساخت از سورس ناموفق بود"
+  local out="$1" ver url
+  local name="gozar-linux-${BIN_ARCH}"
+
+  say "دریافت باینری ${name} ..."
+
+  # ۱) از خود مخزن
+  for br in main master; do
+    url="${GH_RAW}/${br}/bin/${name}"
+    if curl -fsSL --max-time 300 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+      chmod +x "$out"
+      "${out}" version >/dev/null 2>&1 || { rm -f "$out"; continue; }
+      say "باینری از مخزن دریافت شد ✅"
+      return 0
+    fi
+    rm -f "$out"
+  done
+
+  # ۲) از Release
+  ver="$(curl -fsSL --max-time 30 "${GH_RAW}/main/version.json" 2>/dev/null \
+    | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  if [ -n "$ver" ]; then
+    url="${GH}/releases/download/v${ver}/${name}"
+    if curl -fsSL --max-time 300 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
+      chmod +x "$out"
+      "${out}" version >/dev/null 2>&1 || rm -f "$out"
+    fi
   fi
+  if [ -s "$out" ]; then
+    say "باینری v${ver} از Release دریافت شد ✅"
+    return 0
+  fi
+
+  # ۳) ساخت از سورس
+  warn "هیچ باینری آماده‌ای پیدا نشد — از سورس می‌سازم (چند دقیقه)"
+  build_from_source "$out" || die "ساخت از سورس ناموفق بود. اگر اینترنت محدود است، باینری را دستی بگذار در ${INSTALL_DIR}/gozar"
   chmod +x "$out"
 }
 
 build_from_source() {
-  local out="$1" tmp
+  local out="$1" tmp gv
   need git git; need curl curl
   if ! have go; then
     warn "نصب Go ..."
-    local gv="1.24.5"
-    curl -fsSL --max-time 300 "https://go.dev/dl/go${gv}.linux-${BIN_ARCH}.tar.gz" -o /tmp/go.tgz \
-      || return 1
+    gv="$(curl -fsSL --max-time 30 "https://go.dev/VERSION?m=text" 2>/dev/null | head -1 | sed 's/^go//')"
+    [ -n "$gv" ] || gv="1.24.5"
+    warn "نسخهٔ Go: ${gv}"
+    curl -fsSL -L --max-time 600 "https://go.dev/dl/go${gv}.linux-${BIN_ARCH}.tar.gz" -o /tmp/go.tgz \
+      || die "دانلود Go ناموفق بود (dl.google.com ممکن است در دسترس نباشد)"
     rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
     export PATH="/usr/local/go/bin:$PATH"
   fi
