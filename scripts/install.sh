@@ -1,53 +1,58 @@
 #!/usr/bin/env bash
-# نصب‌کنندهٔ گذر (Gozar)
-#   پنل:  bash <(curl -fsSL .../install.sh) --panel
-#   ایجنت: bash <(curl -fsSL .../install.sh) --agent <TOKEN> [--panel-url http://IP:8080]
+# Gozar installer - fully automatic, no questions asked.
+#
+#   Panel:  bash <(curl -fsSL .../install.sh) --panel [--port 8080]
+#   Agent:  bash <(curl -fsSL .../install.sh) --agent <TOKEN> --panel-url http://IP:8080
+#
 set -euo pipefail
 
 REPO="${GOZAR_REPO:-Hosein21378/gozar}"
 BRANCH="${BRANCH:-main}"
-RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
 GH="${GOZAR_GH:-https://github.com/${REPO}}"
 GH_RAW="${GOZAR_RAW:-https://raw.githubusercontent.com/${REPO}}"
 INSTALL_DIR="/opt/gozar"
 DATA_DIR="/etc/gozar"
+DATA_FILE="${DATA_DIR}/data.json"
+CRED_FILE="${DATA_DIR}/credentials.txt"
 SERVICE_PANEL="gozar"
 SERVICE_AGENT="gozar-agent"
 
-GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; DIM=$'\033[2m'; OFF=$'\033[0m'
-say() { printf "%s%s%s\n" "$GREEN" "$1" "$OFF"; }
-warn() { printf "%s%s%s\n" "$YELLOW" "$1" "$OFF"; }
-die() { printf "%s%s%s\n" "$RED" "$1" "$OFF"; exit 1; }
+GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; BOLD=$'\033[1m'; OFF=$'\033[0m'
+ok()   { printf "%s[ ok ]%s %s\n" "$GREEN" "$OFF" "$1"; }
+info() { printf "%s[ .. ]%s %s\n" "$OFF" "$OFF" "$1"; }
+warn() { printf "%s[warn]%s %s\n" "$YELLOW" "$OFF" "$1"; }
+die()  { printf "%s[fail]%s %s\n" "$RED" "$OFF" "$1"; exit 1; }
 
-MODE=""; TOKEN=""; PANEL_URL=""
+MODE=""; TOKEN=""; PANEL_URL=""; PORT="8080"
 while [ $# -gt 0 ]; do
   case "$1" in
     --panel) MODE="panel";;
     --agent) MODE="agent"; TOKEN="${2:-}"; shift || true;;
     --panel-url) PANEL_URL="${2:-}"; shift || true;;
+    --port) PORT="${2:-}"; shift || true;;
     -h|--help)
-      echo "نصب‌کنندهٔ گذر (Gozar)"
-      echo "  نصب پنل:    bash install.sh --panel"
-      echo "  نصب ایجنت:  bash install.sh --agent <TOKEN> --panel-url http://IP:8080"
+      echo "Gozar installer"
+      echo "  bash install.sh --panel [--port 8080]"
+      echo "  bash install.sh --agent <TOKEN> --panel-url http://IP:8080"
       exit 0;;
   esac
   shift || true
 done
 
-[ "$(id -u)" = "0" ] || die "این اسکریپت باید با root اجرا شود (sudo bash install.sh ...)"
+[ "$(id -u)" = "0" ] || die "must run as root:  sudo bash install.sh --panel"
+[ "$(uname -s)" = "Linux" ] || die "Linux only"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64) BIN_ARCH="amd64";;
   aarch64|arm64) BIN_ARCH="arm64";;
-  *) die "معماری ${ARCH} پشتیبانی نمی‌شود (فقط amd64 و arm64)";;
+  *) die "unsupported architecture: ${ARCH} (need amd64 or arm64)";;
 esac
-[ "$(uname -s)" = "Linux" ] || die "فقط لینوکس پشتیبانی می‌شود"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 need() {
   have "$1" && return 0
-  warn "نصب $1 ..."
+  info "installing $1 ..."
   if have apt-get; then
     apt-get update -qq && apt-get install -y -qq "$2"
   elif have yum; then
@@ -57,51 +62,45 @@ need() {
   elif have apk; then
     apk add --no-cache "$2"
   else
-    die "نمی‌توانم $1 را نصب کنم؛ خودتان نصب کنید"
+    die "cannot install $1 - please install it manually"
   fi
 }
 
-# ---------- گرفتن باینری ----------
-# ترتیب تلاش:
-#   ۱) باینری آماده در خود مخزن  (سریع، بدون نیاز به کامپایل)
-#   ۲) باینری پیوست‌شده به Release
-#   ۳) ساخت از سورس             (آخرین چاره — به اینترنت آزاد نیاز دارد)
+# ---------- fetch binary ----------
+# 1) prebuilt binary committed in the repo  (fast, no compilation)
+# 2) binary attached to a GitHub Release
+# 3) build from source                      (last resort, needs open internet)
 fetch_binary() {
   local out="$1" ver url
   local name="gozar-linux-${BIN_ARCH}"
 
-  say "دریافت باینری ${name} ..."
+  info "fetching ${name} ..."
 
-  # ۱) از خود مخزن
-  for br in main master; do
+  for br in "${BRANCH}" main master; do
     url="${GH_RAW}/${br}/bin/${name}"
     if curl -fsSL --max-time 300 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
       chmod +x "$out"
-      "${out}" version >/dev/null 2>&1 || { rm -f "$out"; continue; }
-      say "باینری از مخزن دریافت شد ✅"
-      return 0
+      if "${out}" version >/dev/null 2>&1; then
+        ok "downloaded ${name}"
+        return 0
+      fi
     fi
     rm -f "$out"
   done
 
-  # ۲) از Release
   ver="$(curl -fsSL --max-time 30 "${GH_RAW}/main/version.json" 2>/dev/null \
     | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   if [ -n "$ver" ]; then
     url="${GH}/releases/download/v${ver}/${name}"
     if curl -fsSL --max-time 300 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
       chmod +x "$out"
-      "${out}" version >/dev/null 2>&1 || rm -f "$out"
+      "${out}" version >/dev/null 2>&1 && { ok "downloaded ${name} (release v${ver})"; return 0; }
     fi
   fi
-  if [ -s "$out" ]; then
-    say "باینری v${ver} از Release دریافت شد ✅"
-    return 0
-  fi
+  rm -f "$out"
 
-  # ۳) ساخت از سورس
-  warn "هیچ باینری آماده‌ای پیدا نشد — از سورس می‌سازم (چند دقیقه)"
-  build_from_source "$out" || die "ساخت از سورس ناموفق بود. اگر اینترنت محدود است، باینری را دستی بگذار در ${INSTALL_DIR}/gozar"
+  warn "no prebuilt binary found - building from source (a few minutes)"
+  build_from_source "$out" || die "build failed. As a workaround, place the binary manually at ${INSTALL_DIR}/gozar"
   chmod +x "$out"
 }
 
@@ -109,12 +108,11 @@ build_from_source() {
   local out="$1" tmp gv
   need git git; need curl curl
   if ! have go; then
-    warn "نصب Go ..."
     gv="$(curl -fsSL --max-time 30 "https://go.dev/VERSION?m=text" 2>/dev/null | head -1 | sed 's/^go//')"
     [ -n "$gv" ] || gv="1.24.5"
-    warn "نسخهٔ Go: ${gv}"
-    curl -fsSL -L --max-time 600 "https://go.dev/dl/go${gv}.linux-${BIN_ARCH}.tar.gz" -o /tmp/go.tgz \
-      || die "دانلود Go ناموفق بود (dl.google.com ممکن است در دسترس نباشد)"
+    info "installing Go ${gv} ..."
+    curl -fsSL -L --max-time 900 "https://go.dev/dl/go${gv}.linux-${BIN_ARCH}.tar.gz" -o /tmp/go.tgz \
+      || die "could not download Go (dl.google.com may be unreachable)"
     rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tgz
     export PATH="/usr/local/go/bin:$PATH"
   fi
@@ -125,62 +123,145 @@ build_from_source() {
   rm -rf "$tmp"
 }
 
-# ---------- نصب پنل ----------
+# ---------- helpers ----------
+random_pass() {
+  # 16 chars from /dev/urandom, no pipes that can break under pipefail
+  local s=""
+  s="$(head -c 64 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9')"
+  if [ ${#s} -lt 16 ]; then
+    s="$(head -c 64 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  fi
+  if [ ${#s} -lt 16 ]; then
+    s="$(date +%s%N | tr -dc '0-9')GoZar"
+  fi
+  echo "${s:0:16}"
+}
+
+public_ip() {
+  curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+    || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+    || hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+start_service() {
+  local unit="$1"
+  if have systemctl; then
+    systemctl daemon-reload
+    systemctl enable --now "${unit}" >/dev/null 2>&1 || true
+    return 0
+  fi
+  return 1
+}
+
+# ---------- panel ----------
 install_panel() {
-  say "نصب پنل گذر ..."
+  echo
+  echo "${BOLD}Gozar panel installer${OFF}"
+  echo "----------------------"
   need curl curl
   mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+  chmod 700 "$DATA_DIR"
+
   fetch_binary "${INSTALL_DIR}/gozar"
 
-  local port="8080"
-  printf "پورت پنل (پیش‌فرض ۸۰۸۰): " >/dev/tty 2>/dev/null || true
-  read -r port < /dev/tty 2>/dev/null || port="8080"
-  [ -n "$port" ] || port="8080"
+  # password: only generate on a fresh install, never lock out an existing one
+  local ADMIN_PASS=""
+  if [ -f "$DATA_FILE" ]; then
+    info "existing data file found - keeping current password"
+    [ -f "$CRED_FILE" ] && ADMIN_PASS="$(sed -n 's/^password: //p' "$CRED_FILE" 2>/dev/null | head -1)"
+  else
+    ADMIN_PASS="$(random_pass)"
+    "${INSTALL_DIR}/gozar" setpass --data "$DATA_FILE" --user admin --password "$ADMIN_PASS" >/dev/null 2>&1 \
+      || die "could not initialise admin account"
+    umask 077
+    {
+      echo "Gozar panel credentials"
+      echo "url:      http://$(public_ip):${PORT}"
+      echo "username: admin"
+      echo "password: ${ADMIN_PASS}"
+      echo "generated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+    } > "$CRED_FILE"
+    chmod 600 "$CRED_FILE"
+    ok "generated admin password"
+  fi
 
-  cat > "/etc/systemd/system/${SERVICE_PANEL}.service" <<EOF
+  # systemd unit
+  if have systemctl; then
+    cat > "/etc/systemd/system/${SERVICE_PANEL}.service" <<EOF
 [Unit]
 Description=Gozar Tunnel Panel
 After=network.target
+
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/gozar serve --addr 0.0.0.0:${port} --data ${DATA_DIR}/data.json
+ExecStart=${INSTALL_DIR}/gozar serve --addr 0.0.0.0:${PORT} --data ${DATA_FILE}
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 EOF
+    start_service "${SERVICE_PANEL}"
+    sleep 2
+    if systemctl is-active --quiet "${SERVICE_PANEL}"; then
+      ok "service ${SERVICE_PANEL} is running"
+    else
+      warn "service did not start. Showing last log lines:"
+      journalctl -u "${SERVICE_PANEL}" --no-pager -n 15 2>/dev/null || true
+    fi
+  else
+    warn "systemd not found - starting in background"
+    ( nohup "${INSTALL_DIR}/gozar" serve --addr 0.0.0.0:${PORT} --data "${DATA_FILE}" \
+        >/var/log/gozar.log 2>&1 & ) || true
+  fi
 
-  systemctl daemon-reload
-  systemctl enable --now "${SERVICE_PANEL}" >/dev/null 2>&1
+  # open firewall if a known tool is present (never fatal)
+  if have ufw; then ufw allow "${PORT}/tcp" >/dev/null 2>&1 || true; fi
+  if have firewall-cmd; then firewall-cmd --permanent --add-port="${PORT}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 || true; fi
 
-  local ip
-  ip="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
-  say "پنل آماده است"
-  printf "  نشانی:  %shttp://%s:%s%s\n" "$GREEN" "${ip:-SERVER-IP}" "$port" "$OFF"
-  printf "  %sنام کاربری و رمز پیش‌فرض: admin / admin123 — حتماً عوض کن%s\n" "$YELLOW" "$OFF"
+  local ip; ip="$(public_ip)"
+  echo
+  echo "${BOLD}===================================================${OFF}"
+  echo "${BOLD}  Gozar panel is ready${OFF}"
+  echo "---------------------------------------------------"
+  echo "  URL       http://${ip:-YOUR-SERVER-IP}:${PORT}"
+  echo "  Username  admin"
+  if [ -n "$ADMIN_PASS" ]; then
+    echo "  Password  ${ADMIN_PASS}"
+  else
+    echo "  Password  (unchanged - see ${CRED_FILE})"
+  fi
+  echo "---------------------------------------------------"
+  echo "  Saved to  ${CRED_FILE}"
+  echo "  Start     systemctl start ${SERVICE_PANEL}"
+  echo "  Stop      systemctl stop ${SERVICE_PANEL}"
+  echo "  Logs      journalctl -u ${SERVICE_PANEL} -f"
+  echo "${BOLD}===================================================${OFF}"
+  echo
+  warn "The agent is not available yet - tunnels will stay in 'waiting' state."
+  echo
 }
 
-# ---------- نصب ایجنت ----------
+# ---------- agent ----------
 install_agent() {
-  [ -n "$TOKEN" ] || die "توکن لازم است: --agent <TOKEN>"
-  if [ -z "$PANEL_URL" ]; then
-    printf "نشانی پنل (مثلاً http://1.2.3.4:8080): " >/dev/tty 2>/dev/null || true
-    read -r PANEL_URL < /dev/tty 2>/dev/null || true
-  fi
-  [ -n "$PANEL_URL" ] || die "نشانی پنل لازم است: --panel-url http://IP:8080"
+  [ -n "$TOKEN" ]     || die "missing token:  --agent <TOKEN>"
+  [ -n "$PANEL_URL" ] || die "missing panel url:  --panel-url http://IP:8080"
 
-  say "نصب ایجنت گذر ..."
-  if ! "${INSTALL_DIR}/gozar" agent --help >/dev/null 2>&1; then
-    warn ""
-    warn "ایجنتِ گذر هنوز در این نسخه فعال نیست."
-    warn "نسخهٔ ۱.۰.۰ فقط پنل مدیریت را دارد؛ بخش انتقال ترافیک در حال ساخت است."
-    warn "پس از انتشار نسخهٔ ایجنت، همین دستور را دوباره اجرا کن."
-    exit 1
-  fi
+  echo
+  echo "${BOLD}Gozar agent installer${OFF}"
+  echo "----------------------"
   need curl curl
   mkdir -p "$INSTALL_DIR" "$DATA_DIR"
+
   fetch_binary "${INSTALL_DIR}/gozar"
+  if ! "${INSTALL_DIR}/gozar" agent --help >/dev/null 2>&1; then
+    echo
+    warn "The Gozar agent is not included in this release yet."
+    warn "Version 1.0.0 ships the management panel only."
+    warn "Re-run this command once the agent release is published."
+    exit 1
+  fi
 
   cat > "${DATA_DIR}/agent.env" <<EOF
 GOZAR_PANEL=${PANEL_URL}
@@ -193,6 +274,7 @@ EOF
 Description=Gozar Agent
 After=network-online.target
 Wants=network-online.target
+
 [Service]
 Type=simple
 EnvironmentFile=${DATA_DIR}/agent.env
@@ -200,23 +282,23 @@ ExecStart=${INSTALL_DIR}/gozar agent --panel ${PANEL_URL} --token ${TOKEN}
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
+
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  systemctl daemon-reload
-  systemctl enable --now "${SERVICE_AGENT}" >/dev/null 2>&1
+  start_service "${SERVICE_AGENT}"
   sleep 2
-  if systemctl is-active --quiet "${SERVICE_AGENT}"; then
-    say "ایجنت فعال است ✅"
+  if have systemctl && systemctl is-active --quiet "${SERVICE_AGENT}"; then
+    ok "agent is running and connected to ${PANEL_URL}"
   else
-    warn "ایجنت بالا نیامد. وضعیت:"
-    systemctl status "${SERVICE_AGENT}" --no-pager -l | head -20 || true
+    warn "agent did not report running:"
+    journalctl -u "${SERVICE_AGENT}" --no-pager -n 15 2>/dev/null || true
   fi
 }
 
 case "$MODE" in
   panel) install_panel;;
   agent) install_agent;;
-  *) die "حالت را مشخص کن:  --panel   یا   --agent <TOKEN>";;
+  *) die "pick a mode:  --panel   or   --agent <TOKEN> --panel-url <URL>";;
 esac
