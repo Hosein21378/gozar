@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "notes": "نخستین انتشار: پنل مدیریت وب (بدون ایجنت)",
+  "assets": {
+    "gozar-linux-amd64": "bin/gozar-linux-amd64",
+    "gozar-linux-arm64": "bin/gozar-linux-arm64"
+  }
+}
