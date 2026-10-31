@@ -73,35 +73,47 @@ need() {
 fetch_binary() {
   local out="$1" ver url
   local name="gozar-linux-${BIN_ARCH}"
+  local tmp="${out}.new.$$"
+  rm -f "$tmp"
 
   info "fetching ${name} ..."
 
+  # مهم: مستقیم روی باینریِ در حال اجرا نمی‌توان نوشت (Text file busy).
+  # اول به فایل موقت می‌گیریم، صحت را بررسی می‌کنیم، بعد با mv جایگزین می‌کنیم.
+  fetch_ok() {
+    local u="$1"
+    rm -f "$tmp"
+    curl -fsSL --max-time 300 "$u" -o "$tmp" 2>/dev/null || return 1
+    [ -s "$tmp" ] || return 1
+    chmod +x "$tmp" 2>/dev/null || return 1
+    "$tmp" version >/dev/null 2>&1 || return 1
+    mv -f "$tmp" "$out" 2>/dev/null || return 1
+    chmod +x "$out" 2>/dev/null || true
+    return 0
+  }
+
   for br in "${BRANCH}" main master; do
-    url="${GH_RAW}/${br}/bin/${name}"
-    if curl -fsSL --max-time 300 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
-      chmod +x "$out"
-      if "${out}" version >/dev/null 2>&1; then
-        ok "downloaded ${name}"
-        return 0
-      fi
+    if fetch_ok "${GH_RAW}/${br}/bin/${name}"; then
+      ok "downloaded ${name}"
+      return 0
     fi
-    rm -f "$out"
   done
 
   ver="$(curl -fsSL --max-time 30 "${GH_RAW}/main/version.json" 2>/dev/null \
     | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
   if [ -n "$ver" ]; then
-    url="${GH}/releases/download/v${ver}/${name}"
-    if curl -fsSL --max-time 300 "$url" -o "$out" 2>/dev/null && [ -s "$out" ]; then
-      chmod +x "$out"
-      "${out}" version >/dev/null 2>&1 && { ok "downloaded ${name} (release v${ver})"; return 0; }
+    if fetch_ok "${GH}/releases/download/v${ver}/${name}"; then
+      ok "downloaded ${name} (release v${ver})"
+      return 0
     fi
   fi
-  rm -f "$out"
 
+  rm -f "$tmp"
   warn "no prebuilt binary found - building from source (a few minutes)"
-  build_from_source "$out" || die "build failed. As a workaround, place the binary manually at ${INSTALL_DIR}/gozar"
-  chmod +x "$out"
+  build_from_source "$tmp" || die "build failed. As a workaround, place the binary manually at ${INSTALL_DIR}/gozar"
+  chmod +x "$tmp" 2>/dev/null
+  mv -f "$tmp" "$out" 2>/dev/null || die "could not install binary at ${out}"
+  chmod +x "$out" 2>/dev/null || true
 }
 
 build_from_source() {
@@ -147,7 +159,12 @@ start_service() {
   local unit="$1"
   if have systemctl; then
     systemctl daemon-reload
-    systemctl enable --now "${unit}" >/dev/null 2>&1 || true
+    if systemctl is-active --quiet "${unit}"; then
+      # در حال اجراست: باید restart شود، وگرنه نسخهٔ قدیمی در حافظه می‌ماند
+      systemctl restart "${unit}" >/dev/null 2>&1 || true
+    else
+      systemctl enable --now "${unit}" >/dev/null 2>&1 || true
+    fi
     return 0
   fi
   return 1
@@ -162,7 +179,17 @@ install_panel() {
   mkdir -p "$INSTALL_DIR" "$DATA_DIR"
   chmod 700 "$DATA_DIR"
 
+  local OLD_VER="" NEW_VER=""
+  [ -x "${INSTALL_DIR}/gozar" ] && OLD_VER="$("${INSTALL_DIR}/gozar" version 2>/dev/null | awk '{print $2}')"
+
   fetch_binary "${INSTALL_DIR}/gozar"
+
+  NEW_VER="$("${INSTALL_DIR}/gozar" version 2>/dev/null | awk '{print $2}')"
+  if [ -n "$OLD_VER" ] && [ "$OLD_VER" != "$NEW_VER" ]; then
+    ok "updated ${OLD_VER} -> ${NEW_VER}"
+  elif [ -n "$OLD_VER" ]; then
+    info "already at version ${NEW_VER}"
+  fi
 
   # password: only generate on a fresh install, never lock out an existing one
   local ADMIN_PASS=""
@@ -226,6 +253,7 @@ EOF
   echo "${BOLD}  Gozar panel is ready${OFF}"
   echo "---------------------------------------------------"
   echo "  URL       http://${ip:-YOUR-SERVER-IP}:${PORT}"
+  echo "  Version   ${NEW_VER:-unknown}$([ -n "$OLD_VER" ] && [ "$OLD_VER" != "$NEW_VER" ] && echo "  (was ${OLD_VER})")"
   echo "  Username  admin"
   if [ -n "$ADMIN_PASS" ]; then
     echo "  Password  ${ADMIN_PASS}"
@@ -237,7 +265,11 @@ EOF
   echo "  Start     systemctl start ${SERVICE_PANEL}"
   echo "  Stop      systemctl stop ${SERVICE_PANEL}"
   echo "  Logs      journalctl -u ${SERVICE_PANEL} -f"
+  echo "  Update    re-run this same install command"
   echo "${BOLD}===================================================${OFF}"
+  echo
+  echo "  To update Gozar later, simply run this exact command again."
+  echo "  It downloads the new binary and restarts the service."
   echo
   info "Next: install the agent on each server to carry traffic."
   echo
