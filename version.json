@@ -1,8 +1,0 @@
-{
-  "version": "1.1.0",
-  "notes": "افزوده شدن ایجنت و انتقال واقعی ترافیک + به‌روزرسان داخل پنل",
-  "assets": {
-    "gozar-linux-amd64": "bin/gozar-linux-amd64",
-    "gozar-linux-arm64": "bin/gozar-linux-arm64"
-  }
-}
