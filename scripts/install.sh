@@ -239,7 +239,7 @@ EOF
   echo "  Logs      journalctl -u ${SERVICE_PANEL} -f"
   echo "${BOLD}===================================================${OFF}"
   echo
-  warn "The agent is not available yet - tunnels will stay in 'waiting' state."
+  info "Next: install the agent on each server to carry traffic."
   echo
 }
 
@@ -255,12 +255,10 @@ install_agent() {
   mkdir -p "$INSTALL_DIR" "$DATA_DIR"
 
   fetch_binary "${INSTALL_DIR}/gozar"
-  if ! "${INSTALL_DIR}/gozar" agent --help >/dev/null 2>&1; then
-    echo
-    warn "The Gozar agent is not included in this release yet."
-    warn "Version 1.0.0 ships the management panel only."
-    warn "Re-run this command once the agent release is published."
-    exit 1
+
+  # پیش‌فرض نشانی پنل اگر داده نشده
+  if [ -z "$PANEL_URL" ]; then
+    die "missing panel url:  --panel-url http://IP:8080"
   fi
 
   cat > "${DATA_DIR}/agent.env" <<EOF
@@ -288,13 +286,21 @@ WantedBy=multi-user.target
 EOF
 
   start_service "${SERVICE_AGENT}"
-  sleep 2
+  sleep 3
+  echo
   if have systemctl && systemctl is-active --quiet "${SERVICE_AGENT}"; then
-    ok "agent is running and connected to ${PANEL_URL}"
+    echo "${BOLD}===================================================${OFF}"
+    echo "${BOLD}  Gozar agent is running${OFF}"
+    echo "---------------------------------------------------"
+    echo "  Panel    ${PANEL_URL}"
+    echo "  Status   systemctl status ${SERVICE_AGENT}"
+    echo "  Logs     journalctl -u ${SERVICE_AGENT} -f"
+    echo "${BOLD}===================================================${OFF}"
   else
     warn "agent did not report running:"
     journalctl -u "${SERVICE_AGENT}" --no-pager -n 15 2>/dev/null || true
   fi
+  echo
 }
 
 case "$MODE" in
