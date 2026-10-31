@@ -149,6 +149,22 @@ random_pass() {
   echo "${s:0:16}"
 }
 
+# نشانی را تمیز می‌کند: فاصله، نقل‌قول، و اثرِ کپی از متن‌هایی مانند [url](url)
+sanitize_url() {
+  local u=""
+  # توجه: با pipefail، اگر grep چیزی نیابد کل اسکریپت می‌میرد؛ برای همین || true لازم است
+  u="$(printf '%s' "$1" \
+    | grep -o -m1 -E 'https?://[A-Za-z0-9._~:/?#@!$&*+,;=%-]+' 2>/dev/null \
+    | head -1 || true)"
+  u="${u%/}"
+  printf '%s' "$u"
+}
+
+# توکن را تمیز می‌کند
+sanitize_token() {
+  printf '%s' "$1" | tr -d ' \t\r\n"'"'"'[]<>()' 2>/dev/null || true
+}
+
 public_ip() {
   curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
     || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
@@ -277,8 +293,25 @@ EOF
 
 # ---------- agent ----------
 install_agent() {
-  [ -n "$TOKEN" ]     || die "missing token:  --agent <TOKEN>"
-  [ -n "$PANEL_URL" ] || die "missing panel url:  --panel-url http://IP:8080"
+  # تمیز کردن ورودی‌ها (اگر دستور از متنی کپی شده که به صورت لینک درآمده)
+  TOKEN="$(sanitize_token "$TOKEN")"
+  PANEL_URL="$(sanitize_url "$PANEL_URL")"
+
+  [ -n "$TOKEN" ] || die "missing token:  --agent <TOKEN>"
+  if [ -z "$PANEL_URL" ]; then
+    echo
+    echo "  ERROR: --panel-url is missing or not a valid address."
+    echo
+    echo "  Correct usage (copy it from the panel, do not retype):"
+    echo "    bash <(curl -fsSL https://raw.githubusercontent.com/Hosein21378/gozar/main/scripts/install.sh) \\"
+    echo "      --agent <TOKEN> --panel-url http://PANEL-IP:8080"
+    echo
+    die "invalid --panel-url"
+  fi
+  case "$PANEL_URL" in
+    http://*|https://*) ;;
+    *) die "invalid --panel-url '$PANEL_URL' - it must start with http:// or https://" ;;
+  esac
 
   echo
   echo "${BOLD}Gozar agent installer${OFF}"
@@ -287,11 +320,6 @@ install_agent() {
   mkdir -p "$INSTALL_DIR" "$DATA_DIR"
 
   fetch_binary "${INSTALL_DIR}/gozar"
-
-  # پیش‌فرض نشانی پنل اگر داده نشده
-  if [ -z "$PANEL_URL" ]; then
-    die "missing panel url:  --panel-url http://IP:8080"
-  fi
 
   cat > "${DATA_DIR}/agent.env" <<EOF
 GOZAR_PANEL=${PANEL_URL}
@@ -316,6 +344,18 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  # پیش از راه‌اندازی، بررسی کن اصلاً پنل از این سرور در دسترس هست یا نه
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "${PANEL_URL}/" 2>/dev/null || true)"
+  if [ -z "$code" ] || [ "$code" = "000" ]; then
+    echo
+    warn "cannot reach the panel at ${PANEL_URL} from this server"
+    echo "  The agent is still installed, but it will not connect until it can reach the panel."
+    echo "  Check with:"
+    echo "    curl -v ${PANEL_URL}/"
+    echo "  Make sure the panel is running and that no firewall blocks this server."
+  fi
 
   start_service "${SERVICE_AGENT}"
   sleep 3
