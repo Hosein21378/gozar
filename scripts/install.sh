@@ -23,12 +23,13 @@ info() { printf "%s[ .. ]%s %s\n" "$OFF" "$OFF" "$1"; }
 warn() { printf "%s[warn]%s %s\n" "$YELLOW" "$OFF" "$1"; }
 die()  { printf "%s[fail]%s %s\n" "$RED" "$OFF" "$1"; exit 1; }
 
-MODE=""; TOKEN=""; PANEL_URL=""; PORT="8080"
+MODE=""; TOKEN=""; PANEL_URL=""; PORT="8080"; RELAY_PORT="10000"
 while [ $# -gt 0 ]; do
   case "$1" in
     --panel) MODE="panel";;
     --agent) MODE="agent"; TOKEN="${2:-}"; shift || true;;
     --panel-url) PANEL_URL="${2:-}"; shift || true;;
+    --relay-port) RELAY_PORT="${2:-}"; shift || true;;
     --port) PORT="${2:-}"; shift || true;;
     -h|--help)
       echo "Gozar installer"
@@ -336,7 +337,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=${DATA_DIR}/agent.env
-ExecStart=${INSTALL_DIR}/gozar agent --panel ${PANEL_URL} --token ${TOKEN}
+ExecStart=${INSTALL_DIR}/gozar agent --panel ${PANEL_URL} --token ${TOKEN} --relay-port ${RELAY_PORT}
 Restart=always
 RestartSec=3
 LimitNOFILE=65535
@@ -344,6 +345,23 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  # ---- باز کردن پورت‌های ارتباطی ----
+  # این حیاتی است: بدون آن هیچ ترانسپورتی نمی‌تواند بین دو سرور کار کند
+  local quic_port=$((RELAY_PORT + 100))
+  local kcp_port=$((RELAY_PORT + 200))
+  if have ufw; then
+    ufw allow "${RELAY_PORT}/tcp" >/dev/null 2>&1 || true
+    ufw allow "${quic_port}/udp" >/dev/null 2>&1 || true
+    ufw allow "${kcp_port}/udp" >/dev/null 2>&1 || true
+  fi
+  if have firewall-cmd; then
+    firewall-cmd --permanent --add-port="${RELAY_PORT}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${quic_port}/udp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${kcp_port}/udp" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+  fi
+  ok "opened relay ports: ${RELAY_PORT}/tcp, ${quic_port}/udp (QUIC), ${kcp_port}/udp (KCP)"
 
   # پیش از راه‌اندازی، بررسی کن اصلاً پنل از این سرور در دسترس هست یا نه
   local code
